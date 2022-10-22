@@ -23,8 +23,10 @@ import sys
 from pathlib import Path
 
 ERROR_STR = "This is BAD"
+BISECT_STR = "first bad commit"
 
 
+# stub function
 def build(git_rev) -> str:
     return ERROR_STR
 
@@ -49,7 +51,7 @@ def repo_find(path=".", required=True):
     return repo_find(parent, required)
 
 
-def find_git_revision(rev) -> dict:
+def git_bisect(good, bad, start=True) -> str:
     tree_root = repo_find()
 
     if not tree_root:
@@ -57,65 +59,50 @@ def find_git_revision(rev) -> dict:
 
     from subprocess import run, PIPE, STDOUT
 
-    result = run(
-        ["git", "cat-file", "-p", rev],
-        shell=False,
-        stdin=PIPE,
-        stdout=PIPE,
-        stderr=STDOUT,
-        close_fds=True,
-        cwd=tree_root,
-    )
+    if start:
+        result = run(
+            ["git", "bisect", "start", bad, good],
+            shell=False,
+            stdin=PIPE,
+            stdout=PIPE,
+            stderr=STDOUT,
+            close_fds=True,
+            cwd=tree_root,
+        )
 
+    else:
+        result = run(
+            ["git", "bisect", "bad", bad],
+            shell=False,
+            stdin=PIPE,
+            stdout=PIPE,
+            stderr=STDOUT,
+            close_fds=True,
+            cwd=tree_root,
+        )
     git_rev = result.stdout
     git_rev = git_rev.decode()
     git_rev = git_rev.rstrip()
-
-    assert result.returncode is not None
-    if result.returncode != 0:
-        from warnings import warn
-
-        warn("unable to find git revision")
-        return None
-    rev_dict = dict_from_result(git_rev)
-    return rev_dict
+    return git_rev
 
 
-def dict_from_result(result: str) -> dict:
-    """
-    :param result # a string to search for field name
-    :type str
-    :param field_name # a search string
-    :type field_name: str
-    :rtype dict # dict - list of values which follow the field_name matched
-                                                         otherwise
-    """
-    ret_dict = {}
-    items = result.split("\n")
-    for item in items:
-        field_list = item.split(" ")
-        ret_dict[field_list[0]] = field_list[1:]
-    return ret_dict
-
-
-def find_first_good_build(first_known_bad) -> ():
-    git_dict = {}
-    prev_commit = curr_commit = first_known_bad
-    git_dict = find_git_revision(curr_commit)
+def find_first_good_build(first_known_good, first_known_bad) -> str:
     global ERROR_STR
-    while git_dict is not None:
-        if git_dict is None or "tree" not in git_dict:
-            return None, None
-        tree = git_dict["tree"][0]
-        if build(tree).find(ERROR_STR) < 0:
-            return curr_commit, prev_commit
-        if "parent" in git_dict:
-            prev_commit = curr_commit
-            curr_commit = git_dict["parent"][0]
-            git_dict = find_git_revision(curr_commit)
-        else:
-            return None, None
-    return None, None
+    res = git_bisect(first_known_good, first_known_bad, True)
+
+    while 1:
+        if res.find(BISECT_STR) >= 0:
+            return res
+        rev = res.split("[")
+        if len(rev) > 1:
+            rev = rev[1].split("]")
+            if build(rev[0]).find(ERROR_STR) >= 0:
+                res = git_bisect(None, rev[0], False)
+                continue
+            else:
+                break
+
+    return res
 
 
 def init_get_args(argv):
@@ -129,6 +116,13 @@ def init_get_args(argv):
     )
 
     argparser.add_argument(
+        "-g",
+        "--good",
+        metavar="Good rev short or long hash",
+        help="Git hash revision known to produce good build",
+        required=True,
+    )
+    argparser.add_argument(
         "-b",
         "--bad",
         metavar="Bad rev short or long hash",
@@ -141,8 +135,8 @@ def init_get_args(argv):
 def main(argv=sys.argv[1:]):
     """
 	command line arguments expected:
+	`-g GOOD_HASH_COMMIT
 	`-b BAD_HASH_COMMIT
-	`-l List commit revs (optional)
 	param: argv: str
 	:return: good: str:bad: str
 	"""
@@ -151,12 +145,9 @@ def main(argv=sys.argv[1:]):
     # Start at known bad build commit and work up by parent
     # until a good found i.e. build does not return ERROR_STR
 
-    if args.bad:
-        good_rev, bad_rev = find_first_good_build(args.bad)
-        if good_rev and bad_rev:
-            print(f"Last good rev: {good_rev} before first bad commit rev: {bad_rev}\n")
-        else:
-            print(f"Could not find good revision before rev: {args.bad}\n")
+    if args.bad and args.good:
+        res = find_first_good_build(args.good, args.bad)
+        print(f"{res} \n")
 
 
 if __name__ == "__main__":
